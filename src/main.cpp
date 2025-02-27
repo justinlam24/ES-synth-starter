@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <U8g2lib.h>
+#include <bitset>
 
 //Constants
   const uint32_t interval = 100; //Display update interval
@@ -79,10 +80,39 @@ void setup() {
   Serial.println("Hello World");
 }
 
+std::bitset<4> readCols(){
+  std::bitset<4> cols;
+  cols[0] = digitalRead(C0_PIN);
+  cols[1] = digitalRead(C1_PIN);
+  cols[2] = digitalRead(C2_PIN);
+  cols[3] = digitalRead(C3_PIN);
+
+  return cols;
+}
+
+void setRow(uint8_t rowIdx){
+  digitalWrite(REN_PIN, LOW);
+  digitalWrite(RA0_PIN, rowIdx & 0x01);
+  digitalWrite(RA1_PIN, rowIdx & 0x02);
+  digitalWrite(RA2_PIN, rowIdx & 0x04);
+  digitalWrite(REN_PIN, HIGH);
+}
+
 void loop() {
   // put your main code here, to run repeatedly:
   static uint32_t next = millis();
   static uint32_t count = 0;
+  std::bitset<32> inputs;
+  
+  for(uint8_t row = 0; row < 4; row++){
+    setRow(row);
+    delayMicroseconds(3);
+    std::bitset<4> rowInputs = readCols();
+
+    for(uint8_t col = 0; col < 4; col++){
+      inputs[row*4 + col] = rowInputs[col];
+    }
+  }
 
   while (millis() < next);  //Wait for next interval
 
@@ -93,10 +123,9 @@ void loop() {
   u8g2.setFont(u8g2_font_ncenB08_tr); // choose a suitable font
   u8g2.drawStr(2,10,"Helllo World!");  // write something to the internal memory
   u8g2.setCursor(2,20);
-  u8g2.print(count++);
+  u8g2.print(inputs.to_ulong(),HEX);
   u8g2.sendBuffer();          // transfer internal memory to the display
 
   //Toggle LED
   digitalToggle(LED_BUILTIN);
-  
 }
