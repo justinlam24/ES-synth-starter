@@ -7,8 +7,9 @@
 #include <STM32FreeRTOS.h>   // Include FreeRTOS for STM32
 
 
-
-
+enum ModuleRole { SENDER, RECEIVER };
+ModuleRole moduleRole = SENDER;   // Change to RECEIVER for receiver modules
+uint8_t octave = 4;
 
 // ------------------------ GLOBAL STRUCT & GLOBALS ------------------------ //
 
@@ -23,17 +24,17 @@ struct {
 // Global variable for the current note step size (accessed by ISR)
 uint32_t currentStepSize = 0;
 
-// CAN message queues
-QueueHandle_t msgInQ;  // Queue for received CAN messages
-QueueHandle_t msgOutQ; // Queue for outgoing CAN messages
-
-SemaphoreHandle_t CAN_TX_Semaphore;
-
 // Phase accumulator for audio generation
 static uint32_t phaseAcc = 0;
 HardwareTimer sampleTimer(TIM1);
 
 volatile uint8_t TX_Message[8] = {0}; 
+
+// CAN message queues
+QueueHandle_t msgInQ;  // Queue for received CAN messages
+QueueHandle_t msgOutQ; // Queue for outgoing CAN messages
+
+SemaphoreHandle_t CAN_TX_Semaphore;
 
 // ------------------------- CONSTANTS & PIN DEFINITIONS ------------------------ //
 
@@ -220,8 +221,11 @@ void scanKeysTask(void * pvParameters) {
             if (localInputs[i] != prevInputs[i]) {
                 uint8_t TX_Message[8] = {0};
                 TX_Message[0] = localInputs[i] ? 'P' : 'R';  // 'P' for press, 'R' for release
-                TX_Message[1] = 4;  // Assume Octave 4 (Modify as needed)
+                TX_Message[1] = octave;  // Assume Octave 4 (Modify as needed)
                 TX_Message[2] = i;  // Note number (0-11)
+                Serial.print("TX_Message: ");
+                Serial.write(TX_Message, 8);
+                Serial.println();
 
                 xQueueSend(msgOutQ, TX_Message, portMAX_DELAY);
             }
@@ -272,10 +276,15 @@ void displayUpdateTask(void * pvParameters) {
 
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(2,10,"RECEIVER");
 
-        u8g2.setCursor(2,20);
         xSemaphoreTake(sysState.mutex, portMAX_DELAY);
-        u8g2.print(sysState.inputs.to_ulong(), HEX);
+        uint8_t local_RX_Message[8];
+        memcpy(local_RX_Message, sysState.RX_Message, sizeof(sysState.RX_Message));
+        int8_t volume = sysState.knob3Rotation;
+        xSemaphoreGive(sysState.mutex);
+
+        /*u8g2.print(sysState.inputs.to_ulong(), HEX);
         xSemaphoreGive(sysState.mutex);
 
         u8g2.setCursor(2, 30);
@@ -302,6 +311,22 @@ void displayUpdateTask(void * pvParameters) {
 
         u8g2.sendBuffer();
         digitalToggle(LED_BUILTIN);
+        */
+
+        // Display Volume Level
+        char volumeText[10];
+        sprintf(volumeText, "Vol: %d", volume);
+        u8g2.drawStr(2, 24, volumeText);
+
+        // Display received CAN message
+        char canMessageText[20];
+        sprintf(canMessageText, "RX: %c %d %d", 
+                (local_RX_Message[0] == 'P') ? 'P' : 'R', 
+                local_RX_Message[1], 
+                local_RX_Message[2]);
+        u8g2.drawStr(2, 30, canMessageText);
+
+        u8g2.sendBuffer();
     }
 }
 
@@ -352,18 +377,6 @@ void setup() {
     sysState.mutex = xSemaphoreCreateMutex();
     sysState.knob3Rotation = 4;
 
-    // Create CAN Message Queues
-    msgInQ = xQueueCreate(36, 8);   // 36 messages, 8 bytes each
-    msgOutQ = xQueueCreate(36, 8);
-    CAN_TX_Semaphore = xSemaphoreCreateCounting(3,3);
-
-    // Initialize CAN Bus
-    CAN_Init(true);  // Enable Loopback Mode for Initial Testing
-    setCANFilter(0x123, 0x7FF);
-    CAN_RegisterRX_ISR(CAN_RX_ISR);  // Register Receive Interrupt
-    CAN_RegisterTX_ISR(CAN_TX_ISR);
-    CAN_Start();
-
     // Configure Pins
     pinMode(RA0_PIN, OUTPUT);
     pinMode(RA1_PIN, OUTPUT);
@@ -376,13 +389,32 @@ void setup() {
     pinMode(C3_PIN, INPUT_PULLUP);
     pinMode(LED_BUILTIN, OUTPUT);
 
-    // Initialize Display
+    //Initialise display
+    setOutMuxBit(DRST_BIT, LOW);  //Assert display logic reset
+    delayMicroseconds(2);
+    setOutMuxBit(DRST_BIT, HIGH);  //Release display logic reset
     u8g2.begin();
+    setOutMuxBit(DEN_BIT, HIGH);  //Enable display power supply
 
     // Initialize Audio Sample Timer
     sampleTimer.setOverflow(SAMPLE_RATE, HERTZ_FORMAT);
+#ifndef DISABLE_ISRS
     sampleTimer.attachInterrupt(sampleISR);
+#endif
     sampleTimer.resume();
+
+    CAN_Init(true);
+    setCANFilter(0x123, 0x7ff); 
+#ifndef DISABLE_ISRS
+    CAN_RegisterRX_ISR(CAN_RX_ISR);
+    CAN_RegisterTX_ISR(CAN_TX_ISR);
+#endif
+    CAN_Start();
+
+     // Create CAN Message Queues
+     msgInQ = xQueueCreate(36, 8);   // 36 messages, 8 bytes each
+     msgOutQ = xQueueCreate(36, 8);
+     CAN_TX_Semaphore = xSemaphoreCreateCounting(3,3);
 
     // Start FreeRTOS Tasks
     xTaskCreate(scanKeysTask, "scanKeys", 128, NULL, 2, NULL);
