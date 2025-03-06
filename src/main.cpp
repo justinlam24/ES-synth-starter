@@ -9,7 +9,9 @@
 
 // Shared system state (used by more than one thread)
 struct {
-    std::bitset<32> inputs;  
+    std::bitset<32> inputs;
+    int8_t knob3Rotation; // Store knob position (0 to 8)
+    SemaphoreHandle_t mutex;    
 } sysState;
 
 // Global variable for the current note step size (accessed by ISR)
@@ -99,6 +101,7 @@ void scanKeysTask(void * pvParameters) {
     const TickType_t xFrequency = 50 / portTICK_PERIOD_MS;
     TickType_t xLastWakeTime = xTaskGetTickCount();
     (void) pvParameters;  // Unused parameter
+    static uint8_t prevKnobState = 0;
 
     while (1) {
         // Block until 50ms have passed since last execution
@@ -114,7 +117,39 @@ void scanKeysTask(void * pvParameters) {
                 localInputs[row * 4 + col] = rowInputs[col];
             }
         }
+
+        // Lock Mutex before modifying sysState
+        xSemaphoreTake(sysState.mutex, portMAX_DELAY);
         sysState.inputs = localInputs;
+        xSemaphoreGive(sysState.mutex);  // Unlock Mutex
+
+        // Read knob signals (row 3, columns 0 & 1)
+        uint8_t knobState = (localInputs[12] << 1) | localInputs[13];
+
+        if (knobState != prevKnobState) {
+            int8_t delta = 0;
+
+            // Decode rotation direction based on state transition
+            if ((prevKnobState == 0b00 && knobState == 0b01) ||  // CW
+                (prevKnobState == 0b01 && knobState == 0b11) ||
+                (prevKnobState == 0b11 && knobState == 0b10) ||
+                (prevKnobState == 0b10 && knobState == 0b00)) {
+                delta = 1;
+            }
+            if ((prevKnobState == 0b00 && knobState == 0b10) ||  // CCW
+                (prevKnobState == 0b10 && knobState == 0b11) ||
+                (prevKnobState == 0b11 && knobState == 0b01) ||
+                (prevKnobState == 0b01 && knobState == 0b00)) {
+                delta = -1;
+            }
+
+            // Update knob rotation with bounds (0 - 8)
+            xSemaphoreTake(sysState.mutex, portMAX_DELAY);
+            sysState.knob3Rotation = constrain(sysState.knob3Rotation - delta, 0, 8);
+            xSemaphoreGive(sysState.mutex);
+
+            prevKnobState = knobState;
+        }
 
         // Determine which note (if any) is pressed
         uint32_t localStepSize = 0;
@@ -137,19 +172,32 @@ void displayUpdateTask(void * pvParameters) {
 
     while (1) {
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
-
-        // Toggle the onboard LED as a real-time indicator
         digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
 
-        // Update the display with the currently pressed note (if any)
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_ncenB08_tr);
+
+        xSemaphoreTake(sysState.mutex, portMAX_DELAY);  // Lock Mutex
+        std::bitset<32> localInputs = sysState.inputs;  // Make local copy
+        int8_t volume = sysState.knob3Rotation;
+        xSemaphoreGive(sysState.mutex);  // Unlock Mutex
+
+        const char* keyPressed = "None";
         for (int i = 0; i < 12; i++) {
-            if (sysState.inputs[i]) {
+            if (localInputs[i]) {
                 u8g2.drawStr(0, 12, noteNames[i]);
                 break;
             }
         }
+        u8g2.setCursor(2, 10);
+        u8g2.print("Key: ");
+        u8g2.print(keyPressed);  // Display the note name
+
+        // Display Volume Level
+        u8g2.setCursor(2, 24);
+        u8g2.print("Vol: ");
+        u8g2.print(volume);
+
         u8g2.sendBuffer();
     }
 }
@@ -161,8 +209,11 @@ void sampleISR() {
     // uint32_t step = __atomic_load_n(&currentStepSize, __ATOMIC_RELAXED);
     uint32_t step = currentStepSize;
     phaseAcc += step;
+
+    int8_t volume = __atomic_load_n(&sysState.knob3Rotation, __ATOMIC_RELAXED);
+
     // Generate a simple 8-bit sawtooth wave:
-    int32_t Vout = (int((phaseAcc >> 24) - 128)/8);
+    int32_t Vout = (int((phaseAcc >> 24) - 128) >> (8 - volume));
     analogWrite(OUTR_PIN, Vout + 128);
 }
 
@@ -171,6 +222,10 @@ void sampleISR() {
 void setup() {
     Serial.begin(9600);
     Serial.println("Synth Initialized");
+
+    // Initialize Mutex
+    sysState.mutex = xSemaphoreCreateMutex();
+    sysState.knob3Rotation = 4;
 
     // Configure pins
     pinMode(RA0_PIN, OUTPUT);
