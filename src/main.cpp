@@ -189,6 +189,22 @@ void scanKeysTask(void * pvParameters) {
         // Update currentStepSize (a 32-bit write on a 32-bit MCU is atomic)
         currentStepSize = localStepSize;
 
+        // Compare with previous state to detect key changes
+        for (uint8_t i = 0; i < 12; i++) {
+            if (localInputs[i] != prevInputs[i]) {
+                uint8_t TX_Message[8] = {0};
+                TX_Message[0] = localInputs[i] ? 'P' : 'R';  // 'P' for press, 'R' for release
+                TX_Message[1] = octave;  // Assume Octave 4 (Modify as needed)
+                TX_Message[2] = i;  // Note number (0-11)
+                Serial.print("TX_Message: ");
+                Serial.write(TX_Message, 8);
+                Serial.println();
+
+                xQueueSend(msgOutQ, TX_Message, portMAX_DELAY);
+            }
+            prevInputs[i] = localInputs[i];
+        }
+
         // Read knob signals (row 3, columns 0 & 1)
         uint8_t knobState = (localInputs[12] << 1) | localInputs[13];
         if (knobState != prevKnobState) {
@@ -214,22 +230,6 @@ void scanKeysTask(void * pvParameters) {
             xSemaphoreGive(sysState.mutex);
 
             prevKnobState = knobState;
-        }
-
-        // Compare with previous state to detect key changes
-        for (uint8_t i = 0; i < 12; i++) {
-            if (localInputs[i] != prevInputs[i]) {
-                uint8_t TX_Message[8] = {0};
-                TX_Message[0] = localInputs[i] ? 'P' : 'R';  // 'P' for press, 'R' for release
-                TX_Message[1] = octave;  // Assume Octave 4 (Modify as needed)
-                TX_Message[2] = i;  // Note number (0-11)
-                Serial.print("TX_Message: ");
-                Serial.write(TX_Message, 8);
-                Serial.println();
-
-                xQueueSend(msgOutQ, TX_Message, portMAX_DELAY);
-            }
-            prevInputs[i] = localInputs[i];
         }
     }
 #endif
@@ -268,23 +268,17 @@ void decodeTask(void *pvParameters) {
 void displayUpdateTask(void * pvParameters) {
     const TickType_t xFrequency = 100 / portTICK_PERIOD_MS;
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    (void) pvParameters;  // Unused parameter
 
     while (1) {
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
         digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
 
-        u8g2.clearBuffer();
-        u8g2.setFont(u8g2_font_ncenB08_tr);
-        u8g2.drawStr(2,10,"RECEIVER");
-
         xSemaphoreTake(sysState.mutex, portMAX_DELAY);
         uint8_t local_RX_Message[8];
         memcpy(local_RX_Message, sysState.RX_Message, sizeof(sysState.RX_Message));
         int8_t volume = sysState.knob3Rotation;
-        xSemaphoreGive(sysState.mutex);
 
-        /*u8g2.print(sysState.inputs.to_ulong(), HEX);
+        u8g2.print(sysState.inputs.to_ulong(), HEX);
         xSemaphoreGive(sysState.mutex);
 
         u8g2.setCursor(2, 30);
@@ -302,31 +296,30 @@ void displayUpdateTask(void * pvParameters) {
         // Now display the last received CAN message.
         xSemaphoreTake(sysState.mutex, portMAX_DELAY);
         u8g2.setCursor(66,30);
+        
         Serial.print("RX: ");
         Serial.println(sysState.RX_Message[0]);
-        u8g2.print(sysState.RX_Message[0] == 'P' ? "P" : "R");
-        u8g2.print(sysState.RX_Message[1]);
-        u8g2.print(sysState.RX_Message[2]);
+
+        // OLED Display
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(2,10,"RECEIVER");
+
+        char volumeBuffer[12];
+        sprintf(volumeBuffer, "Volume = %d", sysState.knob3Rotation);
+        u8g2.setCursor(2, 20);
+        u8g2.print(volumeBuffer);
+
+        // Format the message properly
+        char displayBuffer[12];  // Buffer for formatted output
+        sprintf(displayBuffer, "%c %d %d", sysState.RX_Message[0], sysState.RX_Message[1], sysState.RX_Message[2]);
+        u8g2.drawStr(2, 30, displayBuffer);   // Properly formatted output
+
+        u8g2.sendBuffer();  // Update the display
         xSemaphoreGive(sysState.mutex);
 
-        u8g2.sendBuffer();
+       // u8g2.sendBuffer();
         digitalToggle(LED_BUILTIN);
-        */
-
-        // Display Volume Level
-        char volumeText[10];
-        sprintf(volumeText, "Vol: %d", volume);
-        u8g2.drawStr(2, 24, volumeText);
-
-        // Display received CAN message
-        char canMessageText[20];
-        sprintf(canMessageText, "RX: %c %d %d", 
-                (local_RX_Message[0] == 'P') ? 'P' : 'R', 
-                local_RX_Message[1], 
-                local_RX_Message[2]);
-        u8g2.drawStr(2, 30, canMessageText);
-
-        u8g2.sendBuffer();
     }
 }
 
@@ -377,17 +370,22 @@ void setup() {
     sysState.mutex = xSemaphoreCreateMutex();
     sysState.knob3Rotation = 4;
 
-    // Configure Pins
+    // Configure pins
     pinMode(RA0_PIN, OUTPUT);
     pinMode(RA1_PIN, OUTPUT);
     pinMode(RA2_PIN, OUTPUT);
     pinMode(REN_PIN, OUTPUT);
+    pinMode(OUT_PIN, OUTPUT);
+    pinMode(OUTL_PIN, OUTPUT);
     pinMode(OUTR_PIN, OUTPUT);
-    pinMode(C0_PIN, INPUT_PULLUP);
-    pinMode(C1_PIN, INPUT_PULLUP);
-    pinMode(C2_PIN, INPUT_PULLUP);
-    pinMode(C3_PIN, INPUT_PULLUP);
     pinMode(LED_BUILTIN, OUTPUT);
+
+    pinMode(C0_PIN, INPUT);
+    pinMode(C1_PIN, INPUT);
+    pinMode(C2_PIN, INPUT);
+    pinMode(C3_PIN, INPUT);
+    pinMode(JOYX_PIN, INPUT);
+    pinMode(JOYY_PIN, INPUT);
 
     //Initialise display
     setOutMuxBit(DRST_BIT, LOW);  //Assert display logic reset
@@ -419,8 +417,8 @@ void setup() {
     // Start FreeRTOS Tasks
     xTaskCreate(scanKeysTask, "scanKeys", 128, NULL, 2, NULL);
     xTaskCreate(displayUpdateTask, "displayUpdate", 256, NULL, 1, NULL);
-    xTaskCreate(CAN_TX_Task, "canTX", 128, NULL, 3, NULL);
-    xTaskCreate(decodeTask, "decodeTask", 128, NULL, 3, NULL);
+    xTaskCreate(CAN_TX_Task, "CAN_TX_Task", 128, NULL, 1, NULL);
+    xTaskCreate(decodeTask, "decodeTask", 128, NULL, 1, NULL);
 
 #ifdef TEST_SCANKEYS
     uint32_t startTime = micros();
