@@ -231,6 +231,28 @@ void scanKeysTask(void * pvParameters) {
 
             prevKnobState = knobState;
         }
+
+        /*Serial.print("Pressed Keys & Knobs: ");
+        for (uint8_t key = 0; key < 16; key++) {
+            if (localInputs[key]) {
+                Serial.print(key);
+                Serial.print(" ");
+            }
+        }
+        Serial.println();*/
+
+        // Read Knob 1 and Knob 2 from Analog Pins
+        int knob1Value = analogRead(JOYX_PIN);  // Knob 1 (A1)
+        int knob2Value = analogRead(JOYY_PIN);  // Knob 2 (A0)
+
+        // Convert to a range (e.g., 0-8 for Octave Control)
+        uint8_t mappedKnob1 = map(knob1Value, 0, 1023, 0, 8);
+        uint8_t mappedKnob2 = map(knob2Value, 0, 1023, 0, 8);
+
+        // Debugging printout
+        Serial.print("Knob 1: "); Serial.print(mappedKnob1);
+        Serial.print(" | Knob 2: "); Serial.println(mappedKnob2);
+
     }
 #endif
 }
