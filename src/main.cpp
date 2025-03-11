@@ -359,6 +359,8 @@ void scanKeysTask(void * pvParameters) {
             Serial.println("Transposing Down");
         }
 
+        Serial.println(newTranspose - 4);
+
         bool knob0SPressed = !localInputs[25];
 
         if (!localInputs[20]){
@@ -509,26 +511,27 @@ void sampleISR() {
 
     int ymax = 119;
     int ymin = 800;
-    
-    // static int prevTranspose = 0;
-    // int newTranspose = sysState.knob0.getRotation();
 
+    const float transposeMultipliers[9] = {
+        0.7937098,  // -4 semitones
+        0.8409038,  // -3 semitones
+        0.8909039,  // -2 semitones
+        0.943877,  // -1 semitone
+        1.000000,  // Base frequency (no transposition)
+        1.0594600,  // +1 semitone
+        1.1224555,  // +2 semitones
+        1.1891967,  // +3 semitones
+        1.2599063   // +4 semitones
+    };
+
+    int newTranspose = sysState.knob0.getRotation(); 
+    
     // Calculate effective step size based on moduleOctave.
     // (Assuming 4 is the base octave.)
-    
+
     uint32_t effectiveStep = currentStepSize;
 
-    /*if (newTranspose > prevTranspose) {
-        effectiveStep *= 1.05946;
-    }
-    else if (newTranspose < prevTranspose) {
-        effectiveStep /= 1.05946;
-    }
-    else {
-        Serial.println("Max/Min Transpose reached");
-    }
-
-    prevTranspose = newTranspose;*/
+    effectiveStep *= transposeMultipliers[newTranspose];  // Faster than pow()
 
     effectiveStep += ((int32_t)(joyY12Val - 6) * (effectiveStep / 100));
 
